@@ -72,51 +72,74 @@ int detect_base_and_align_p(int base, const char** p)
 	return base;
 }
 
-bool multiplication_overflow(long value, int base, long* result)
-{
-	// during multiplication overflow but on overflow the product wraps around
-	// modulo 2^n so (temp/base) will not recover to the orginal value
-	long temp = value * base;
-	if (temp / base != value) {
-		return true;
+void skip_to_first_non_digit(const char** p, int base) {
+	(*p)++;
+	while (**p != '\0') {
+		bool is_valid_digit = true;
+		int digit = convert_char_to_digit(*p, &is_valid_digit);
+		if (!is_valid_digit || digit >= base) {
+			break;
+		}
+		(*p)++;
 	}
-	*result = temp;
+}
+
+bool multiply_and_check_overflow(long value, int base, long* result)
+{
+	// check upper and lower bound for multiplication:
+	// if value*base > LONG_MAX or value*base < LONG_MIN,
+	// result would wrap around modulo 2^n, so we detect it before
+	if (value >  0 && value > LONG_MAX / base) return true;
+	if (value <  0 && value < LONG_MIN / base) return true;
+	*result = value * base;
+	return false;
+}
+bool add_and_check_overflow(long value, int sign, int digit, long* result)
+{
+	// pre-check addition:
+	// adding sign*digit to value past LONG_MAX/LONG_MIN
+	// would wrap the result to the opposite end, so detect before arithmetic
+	if (sign > 0 && value > LONG_MAX - digit) return true;
+	if (sign < 0 && value < LONG_MIN + digit) return true;
+	*result = value + sign * digit;
 	return false;
 }
 
-bool addition_overflow(long value, int sign, int digit, long* result)
-{
-	// during overflow the result would jump to the opposite end of the range
-	long new_value = value + sign * digit;
-	if ((sign > 0 && new_value < value) || (sign < 0 && new_value > value)) {
-		return true;
-	}
-	*result = new_value;
-	return false;
+bool process_digit(const char** p, long* converted_value, int base, int sign, bool* is_overflowed) {
+    bool is_valid_digit = true;
+    int digit = convert_char_to_digit(*p, &is_valid_digit);
+
+    if (!is_valid_digit || digit >= base) {
+        return false; // Not a valid digit for the given base
+    }
+
+    // Check for overflows and convert digit to its proper numeric system
+    long temp;
+    if (multiply_and_check_overflow(*converted_value, base, &temp) ||
+        add_and_check_overflow(temp, sign, digit, converted_value)) {
+        *is_overflowed = true;
+        *converted_value = (sign > 0 ? LONG_MAX : LONG_MIN);
+        return true; // (Overflow occurred)
+    }
+
+    (*p)++;
+    return true;
 }
 
 void process_digits(const char** p, long* converted_value, int base, int sign,
 					bool* has_digits, bool* is_overflowed)
 {
 	while (**p != '\0') {
-		bool is_valid_digit = true;
-		int digit = convert_char_to_digit(*p, &is_valid_digit);
-
-		if (!is_valid_digit || digit >= base)
-			break;
+		if (!process_digit(p, converted_value, base, sign, is_overflowed)) {
+			break; // Not a valid digit for the given base
+		}
 
 		*has_digits = true;
 
-		// Check for overflows
-		long temp;
-		if (multiplication_overflow(*converted_value, base, &temp) ||
-			addition_overflow(temp, sign, digit, converted_value)) {
-			*is_overflowed = true;
-			*converted_value = (sign > 0 ? LONG_MAX : LONG_MIN);
+		if (*is_overflowed) {
+			skip_to_first_non_digit(p, base);
 			break;
 		}
-
-		(*p)++;
 	}
 }
 void handle_no_digits(const char* nptr, const char** p, long* converted_value, bool has_digits)
@@ -124,15 +147,17 @@ void handle_no_digits(const char* nptr, const char** p, long* converted_value, b
 	if (!has_digits) {
 		*converted_value = 0;
 		*p = nptr; // Reset pointer position
-		skip_whitespaces(p);
-		if (**p == '+' || **p == '-') {
-			(*p)++;
-		}
 	}
 }
 
 long strtol(const char* nptr, char** endptr, int base)
 {
+	if (base != 0 && (base < 2 || base > 36)) {
+		errno = EINVAL;
+		if (endptr)
+			*endptr = (char*)nptr;
+		return 0;
+	}
 
 	const char* p = nptr; // Pointer to the current character in the string
 						  // Initialized to the same location as nptr as const
@@ -162,9 +187,9 @@ long strtol(const char* nptr, char** endptr, int base)
 
 int main()
 {
-	const char* str = "12345tralalala";
+	const char* str = "2137abcd";
 	char* endptr;
-	long result = strtol(str, &endptr, 10);
+	long result = strtol(str, &endptr, 16);
 	printf("Converted value: %ld\n", result);
 	printf("Remaining string: %s\n", endptr);
 }
